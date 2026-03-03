@@ -12,8 +12,6 @@ import html2text
 import re
 import traceback
 
-Environment / secrets (set as GitHub repo secrets)
-
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -386,7 +384,7 @@ else:
     print("[MAIL] mailbox credentials not set; skipping mailbox read.")
 
 # Dedupe
-all_candidates = dedupe_items(mail_items + rss_collected)
+all_candidates = dedupe_items(mail_items + rss_collected)  # dedupe
 print(f"[STORE] candidates after dedupe: {len(all_candidates)}")
 
 # Enrich
