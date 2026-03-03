@@ -12,6 +12,7 @@ import html2text
 import re
 import traceback
 
+Environment / secrets (must be set as GitHub repo secrets)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
