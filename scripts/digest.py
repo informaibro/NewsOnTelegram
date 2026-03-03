@@ -11,6 +11,7 @@ from bs4 import BeautifulSoup
 import html2text
 import re
 import traceback
+from openai import OpenAI
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -343,10 +344,12 @@ def contains_ai_signal(text, title=""):
 
 
 def summarize_with_openai(title, content, url):
-    try:
-        import openai
+    if not OPENAI_API_KEY:
+        return None
 
-        openai.api_key = OPENAI_API_KEY
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+
         prompt = (
             "You are an AI news brief assistant for startup founders.\n"
             "Given the title, URL, and content of a news item, produce EXACTLY three lines in plain English:\n"
@@ -362,12 +365,14 @@ def summarize_with_openai(title, content, url):
         )
 
         full = f"Title: {title}\nURL: {url}\n\nContent:\n{content[:8000]}"
-        resp = openai.ChatCompletion.create(
-            model="gpt-4o-mini",
+
+        resp = client.chat.completions.create(
+            model="gpt-4.1-mini",
             messages=[{"role": "user", "content": prompt + "\n\n" + full}],
             max_tokens=220,
             temperature=0.2,
         )
+
         raw = resp.choices[0].message.content.strip()
         summary = ""
         why = ""
@@ -386,18 +391,26 @@ def summarize_with_openai(title, content, url):
             raise ValueError("Could not parse three-line summary from OpenAI output")
 
         return summary, why, impact
+
     except Exception as e:
         print("[OpenAI] error:", e)
         return None
 
 
 def simple_extract_summary(title, content, url):
-    lines = [l.strip() for l in content.splitlines() if l.strip()]
+    lines = [l.strip() for l in (content or "").splitlines() if l.strip()]
     snippet = " ".join(lines[:4]) if lines else title
-    action = (
-        "Founder action: monitor vendor integrations and run a small 30-day pilot with defined KPIs."
+    if len(snippet) > 260:
+        snippet = snippet[:260] + "..."
+
+    summary = snippet or title
+    why = (
+        "This is a notable development in the AI ecosystem that could affect product, strategy, or competition."
     )
-    return f"{title}\n{snippet}\n{action}\n{url}"
+    impact = (
+        "Founders should consider how this changes their roadmap, differentiation, or go-to-market over the next 3–6 months."
+    )
+    return summary, why, impact
 
 
 def build_enriched_items(rss_items, mail_items):
@@ -490,12 +503,13 @@ def format_message(top_items, want_more):
         message = message[:3800] + "\n\n... (truncated)"
     return message
 
+
 def post_telegram(text):
     api = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
-        "parse_mode": "Markdown",  # <- era "HTML"
+        "parse_mode": "Markdown",
         "disable_web_page_preview": False,
     }
     try:
