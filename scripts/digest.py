@@ -1,285 +1,3 @@
-#!/usr/bin/env python3
-import os
-import requests
-import feedparser
-import imaplib
-import email
-from email.header import decode_header
-from datetime import datetime, timedelta, timezone
-from dateutil import parser as dparser
-from bs4 import BeautifulSoup
-import html2text
-import time
-import re
-import traceback
-
-Environment / secrets
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-MAIL_EMAIL = os.getenv("MAIL_EMAIL")
-MAIL_APP_PASSWORD = os.getenv("MAIL_APP_PASSWORD")
-IMAP_SERVER = os.getenv("IMAP_SERVER", "imap.gmail.com")
-IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
-
-if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-raise SystemExit("Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID environment variables (set as GitHub secrets).")
-
-AI relevance keywords (case-insensitive)
-
-AI_KEYWORDS = [
-"ai", "artificial intelligence", "machine learning", "ml", "llm", "large language model",
-"foundation model", "multimodal", "agent", "agentic", "autonomous agent", "anthropic", "openai",
-"chatgpt", "claude", "gpt", "model", "fine-tune", "inference", "training", "parameter",
-"generative", "synthetic", "hallucination", "prompt", "prompt engineering", "embedding",
-"vector database", "agent api", "model release", "deployment", "edge ai", "on-device ai",
-"ai product", "ai startup", "ai funding", "ai partnership", "ai regulation", "responsible ai",
-"safety", "alignment", "ai chip", "inference cost", "benchmark", "evaluation", "ethics"
-]
-AI_KEYWORDS_RE = re.compile(r"\b(" + r"|".join([re.escape(k) for k in AI_KEYWORDS]) + r")\b", flags=re.I)
-
-Prioritized feeds (can be tuned)
-
-RSS_FEEDS = [
-"https://news.treeofalpha.com/feed.xml",
-"https://artificialintelligence-news.com/feed/",
-"https://openai.com/blog/rss",
-"https://deepmind.com/blog/rss.xml",
-"https://www.theverge.com/ai/rss/index.xml",
-"https://techcrunch.com/tag/artificial-intelligence/feed/",
-"https://www.reuters.com/technology/feed/"
-]
-
---------------------
-
-Utilities: fetch / parse
-
---------------------
-
-def fetch_feed_entries(url):
-try:
-d = feedparser.parse(url)
-entries = d.entries if 'entries' in d else []
-out = []
-for e in entries:
-title = getattr(e, 'title', '') or ''
-link = getattr(e, 'link', '') or ''
-summary = getattr(e, 'summary', '') or ''
-published = None
-if hasattr(e, 'published'):
-try:
-published = dparser.parse(e.published)
-except:
-published = None
-if not published and hasattr(e, 'updated'):
-try:
-published = dparser.parse(e.updated)
-except:
-published = None
-out.append({
-"title": title,
-"link": link,
-"summary": summary,
-"published": published,
-"source": "RSS"
-})
-return out
-except Exception as e:
-print("[RSS] error parsing feed", url, e)
-return []
-
-def text_from_url(url):
-try:
-r = requests.get(url, timeout=12, headers={"User-Agent":"Mozilla/5.0"})
-r.raise_for_status()
-soup = BeautifulSoup(r.text, "html.parser")
-for s in soup(["script", "style", "noscript"]):
-s.decompose()
-text = soup.get_text(separator="\n")
-return text.strip()
-except Exception as e:
-print("[FETCH] error fetching", url, e)
-return ""
-
-Tree of Alpha quick scraper (when RSS misses items)
-
-def scrape_tree_of_alpha_latest():
-url = "https://news.treeofalpha.com/"
-try:
-r = requests.get(url, timeout=12, headers={"User-Agent":"Mozilla/5.0"})
-r.raise_for_status()
-soup = BeautifulSoup(r.text, "html.parser")
-results = []
-for a in soup.select("article a[href]"):
-href = a.get('href', '').strip()
-title = a.get_text(strip=True)
-if not href or not title:
-continue
-if href.startswith("/"):
-href = "https://news.treeofalpha.com" + href
-results.append({
-"title": title,
-"link": href,
-"published": datetime.now(timezone.utc),
-"source": "TreeOfAlpha"
-})
-# dedupe
-seen = set()
-uniq = []
-for ritem in results:
-k = (ritem.get("link") or ritem.get("title")).strip()
-if k in seen:
-continue
-seen.add(k)
-uniq.append(ritem)
-return uniq[:12]
-except Exception as e:
-print("[SCRAPE] TreeOfAlpha error:", e)
-return []
-
---------------------
-
-Mail (IMAP) parsing
-
---------------------
-
-def decode_mime_words(s):
-try:
-parts = decode_header(s)
-out = []
-for part, enc in parts:
-if isinstance(part, bytes):
-out.append(part.decode(enc or 'utf-8', errors='ignore'))
-else:
-out.append(part)
-return ''.join(out)
-except Exception:
-return s
-
-def extract_links_from_html(html_text):
-soup = BeautifulSoup(html_text, "html.parser")
-links = []
-for a in soup.find_all('a', href=True):
-href = a['href'].strip()
-text = a.get_text(separator=' ', strip=True)
-if href and text:
-links.append((text, href))
-return links
-
-def parse_message_body(msg):
-body = ""
-html = None
-if msg.is_multipart():
-for part in msg.walk():
-ctype = part.get_content_type()
-disp = str(part.get("Content-Disposition") or "")
-if ctype == "text/html" and "attachment" not in disp:
-html = part.get_payload(decode=True)
-charset = part.get_content_charset() or 'utf-8'
-try:
-html = html.decode(charset, errors='ignore')
-except:
-html = html.decode('utf-8', errors='ignore')
-break
-if not html:
-for part in msg.walk():
-ctype = part.get_content_type()
-if ctype == "text/plain":
-text = part.get_payload(decode=True)
-try:
-text = text.decode(part.get_content_charset() or 'utf-8', errors='ignore')
-except:
-text = text.decode('utf-8', errors='ignore')
-body = text
-break
-else:
-payload = msg.get_payload(decode=True)
-if payload:
-try:
-body = payload.decode(msg.get_content_charset() or 'utf-8', errors='ignore')
-except:
-body = payload.decode('utf-8', errors='ignore')
-if html:
-links = extract_links_from_html(html)
-text = BeautifulSoup(html, "html.parser").get_text(separator="\n")
-return text, links
-return body, []
-
-def imap_fetch_newsletters(email_addr, app_password, days_back=7, max_messages=100):
-results = []
-if not email_addr or not app_password:
-print("[MAIL] No MAIL_EMAIL or MAIL_APP_PASSWORD provided; skipping mailbox read.")
-return results
-try:
-print(f"[MAIL] Connecting to IMAP {IMAP_SERVER}:{IMAP_PORT} as {email_addr}")
-M = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
-M.login(email_addr, app_password)
-M.select("INBOX")
-since_date = (datetime.now() - timedelta(days=days_back)).strftime("%d-%b-%Y")
-typ, data = M.search(None, f'(OR UNSEEN SINCE {since_date})')
-if typ != 'OK':
-print("[MAIL] no messages found or search failed:", typ)
-M.logout()
-return results
-ids = data[0].split()
-ids = ids[-max_messages:]
-print(f"[MAIL] found {len(ids)} candidate messages (last {days_back} days).")
-for num in reversed(ids):
-try:
-typ, msg_data = M.fetch(num, '(RFC822)')
-if typ != 'OK':
-continue
-raw = msg_data[0][1]
-msg = email.message_from_bytes(raw)
-subject = decode_mime_words(msg.get('Subject') or "")
-frm = decode_mime_words(msg.get('From') or "")
-date_str = msg.get('Date')
-try:
-published = dparser.parse(date_str) if date_str else datetime.now()
-except:
-published = datetime.now()
-text, links = parse_message_body(msg)
-items = []
-if links:
-for text_link, href in links[:8]:
-title = text_link.strip() or subject
-items.append({
-"title": title,
-"link": href,
-"source": frm,
-"published": published,
-"context": f"Newsletter: {subject}"
-})
-else:
-lines = [l.strip() for l in text.splitlines() if l.strip()]
-candidates = [l for l in lines if 6 < len(l) < 200][:6]
-for c in candidates:
-items.append({
-"title": c,
-"link": None,
-"source": frm,
-"published": published,
-"context": f"Newsletter: {subject}"
-})
-# mark read to avoid reprocessing (optional)
-try:
-M.store(num, '+FLAGS', '\Seen')
-except Exception:
-pass
-for it in items:
-results.append(it)
-except Exception as e:
-print("[MAIL] parse message error:", e)
-traceback.print_exc()
-M.logout()
-except Exception as e:
-print("[MAIL] IMAP connection error:", e)
-traceback.print_exc()
-return results
-
---------------------
-
 Relevance & enrichment
 
 --------------------
@@ -399,12 +117,16 @@ if len(message) > 3800:
 message = message[:3800] + "\n\n... (truncated)"
 return message
 
+--------------------
+
+Telegram post helper
+
+--------------------
+
 def post_telegram(text):
 api = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": False}
 try:
-
-
 r = requests.post(api, json=payload, timeout=20)
 r.raise_for_status()
 return r.json()
@@ -420,7 +142,9 @@ Main
 
 def main():
 print("[START] Digest run:", datetime.now().isoformat())
-now = datetime.now(timezone.utc)...
+now = datetime.now(timezone.utc)
+
+
 # Collect RSS / scrapes
 rss_collected = []
 print("[RSS] fetching configured feeds...")
@@ -470,4 +194,4 @@ except Exception as e:
 
 print("[END] Digest run completed.")
 if name == "main":
-main()
+main()...
