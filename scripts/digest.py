@@ -25,6 +25,7 @@ IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
 
 if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
 raise SystemExit("Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID environment variables (set as GitHub secrets).")
+
 AI relevance keywords (case-insensitive)
 
 AI_KEYWORDS = [
