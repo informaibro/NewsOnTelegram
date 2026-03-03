@@ -18,8 +18,8 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 MAIL_EMAIL = os.getenv("MAIL_EMAIL")
 MAIL_APP_PASSWORD = os.getenv("MAIL_APP_PASSWORD")
-IMAP_SERVER = os.getenv("IMAP_SERVER", "imap.gmail.com")
-IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
+IMAP_SERVER = os.getenv("IMAP_SERVER") or "imap.gmail.com"
+IMAP_PORT = int(os.getenv("IMAP_PORT") or "993")
 
 if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
     raise SystemExit(
