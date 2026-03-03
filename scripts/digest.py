@@ -12,6 +12,8 @@ import html2text
 import re
 import traceback
 
+Secrets (set as GitHub repo secrets)
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -22,8 +24,6 @@ IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
 
 if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
 raise SystemExit("Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID environment variables (set as GitHub secrets).")
-
-Keywords to detect AI relevance (case-insensitive)
 
 AI_KEYWORDS = [
 "ai", "artificial intelligence", "machine learning", "ml", "llm", "large language model",
@@ -36,8 +36,6 @@ AI_KEYWORDS = [
 ]
 AI_KEYWORDS_RE = re.compile(r"\b(" + r"|".join([re.escape(k) for k in AI_KEYWORDS]) + r")\b", flags=re.I)
 
-Prioritized RSS / feed sources
-
 RSS_FEEDS = [
 "https://news.treeofalpha.com/feed.xml",
 "https://artificialintelligence-news.com/feed/",
@@ -47,8 +45,6 @@ RSS_FEEDS = [
 "https://techcrunch.com/tag/artificial-intelligence/feed/",
 "https://www.reuters.com/technology/feed/"
 ]
-
---- Utilities ---
 
 def fetch_feed_entries(url):
 try:
@@ -95,7 +91,7 @@ r = requests.get(url, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
 r.raise_for_status()
 soup = BeautifulSoup(r.text, "html.parser")
 results = []
-or a in soup.select("article a[href]"):
+for a in soup.select("article a[href]"):
 href = a.get('href', '').strip()
 title = a.get_text(strip=True)
 if not href or not title:
@@ -116,8 +112,6 @@ except Exception as e:
 print("[SCRAPE] TreeOfAlpha error:", e)
 return []
 
---- Mail (IMAP) parsing ---
-
 def decode_mime_words(s):
 try:
 parts = decode_header(s)
@@ -132,7 +126,7 @@ except Exception:
 return s
 
 def extract_links_from_html(html_text):
-soup = BeautifulSoup(html_text, "html.parser")
+    soup = BeautifulSoup(html_text, "html.parser")
 links = []
 for a in soup.find_all('a', href=True):
 href = a['href'].strip()
@@ -239,8 +233,6 @@ print("[MAIL] IMAP connection error:", e)
 traceback.print_exc()
 return results
 
---- Relevance & enrichment ---
-
 def dedupe_items(items):
 seen = set()
 out = []
@@ -269,7 +261,6 @@ return False
 if not is_english(target):
 return False
 return bool(AI_KEYWORDS_RE.search(target))
-
 def summarize_with_openai(title, content, url):
 try:
 import openai
@@ -314,8 +305,6 @@ summary = simple_extract_summary(title, content or "", link or "")
 enriched.append({"title": title, "link": link, "summary": summary, "published": published})
 return enriched
 
---- Formatting & posting ---
-
 def format_message(top_items, want_more):
 date_str = datetime.now().astimezone().strftime("%Y-%m-%d")
 header = f"<b>AI Brief — {date_str}</b>\n\n"
@@ -353,12 +342,9 @@ except Exception as e:
 print("[POST] Telegram error:", e)
 raise
 
---- Main ---
-
 def main():
 print("[START] Digest run:", datetime.now().isoformat())
 now = datetime.now(timezone.utc)
-# Collect RSS / scrapes
 rss_collected = []
 print("[RSS] fetching configured feeds...")
 for feed in RSS_FEEDS:
@@ -374,7 +360,6 @@ for feed in RSS_FEEDS:
 
 print(f"[RSS] gathered {len(rss_collected)} rss/scrape items (pre-filter).")
 
-# Mailbox
 mail_items = []
 if MAIL_EMAIL and MAIL_APP_PASSWORD:
     print("[MAIL] reading mailbox for newsletters...")
@@ -383,20 +368,16 @@ if MAIL_EMAIL and MAIL_APP_PASSWORD:
 else:
     print("[MAIL] mailbox credentials not set; skipping mailbox read.")
 
-# Dedupe
-all_candidates = dedupe_items(mail_items + rss_collected)  # dedupe
+all_candidates = dedupe_items(mail_items + rss_collected) # dedupe
 print(f"[STORE] candidates after dedupe: {len(all_candidates)}")
 
-# Enrich
 enriched = build_enriched_items(rss_collected, mail_items)
 print(f"[ENRICH] enriched AI-relevant items count: {len(enriched)}")
 
-# Select top items
 enriched_sorted = sorted(enriched, key=lambda x: x.get("published") or datetime.now(), reverse=True)
 top5 = enriched_sorted[:5]
 want_more = enriched_sorted[5:13]
 
-# Format & post
 message = format_message(top5, want_more)
 try:
     resp = post_telegram(message)
