@@ -12,8 +12,6 @@ import html2text
 import re
 import traceback
 
-Secrets (set as GitHub repo secrets)
-
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -27,12 +25,11 @@ raise SystemExit("Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID environment variabl
 
 AI_KEYWORDS = [
 "ai", "artificial intelligence", "machine learning", "ml", "llm", "large language model",
-"foundation model", "multimodal", "agent", "agentic", "autonomous agent", "anthropic", "openai",
-"chatgpt", "claude", "gpt", "model", "fine-tune", "inference", "training",
-"generative", "synthetic", "hallucination", "prompt", "prompt engineering", "embedding",
-"vector database", "agent api", "model release", "deployment", "edge ai", "on-device ai",
-"ai product", "ai startup", "ai funding", "ai partnership", "ai regulation", "responsible ai",
-"safety", "alignment", "ai chip", "inference cost", "benchmark", "evaluation", "ethics"
+"foundation model", "multimodal", "agent", "anthropic", "openai", "chatgpt", "claude", "gpt",
+"model", "inference", "training", "generative", "prompt", "embedding",
+"vector database", "deployment", "edge ai", "ai product", "ai startup", "ai funding",
+"ai partnership", "ai regulation", "responsible ai", "safety", "alignment", "ai chip",
+"inference cost", "benchmark", "evaluation", "ethics"
 ]
 AI_KEYWORDS_RE = re.compile(r"\b(" + r"|".join([re.escape(k) for k in AI_KEYWORDS]) + r")\b", flags=re.I)
 
@@ -126,7 +123,7 @@ except Exception:
 return s
 
 def extract_links_from_html(html_text):
-    soup = BeautifulSoup(html_text, "html.parser")
+soup = BeautifulSoup(html_text, "html.parser")
 links = []
 for a in soup.find_all('a', href=True):
 href = a['href'].strip()
@@ -261,6 +258,7 @@ return False
 if not is_english(target):
 return False
 return bool(AI_KEYWORDS_RE.search(target))
+
 def summarize_with_openai(title, content, url):
 try:
 import openai
@@ -345,6 +343,7 @@ raise
 def main():
 print("[START] Digest run:", datetime.now().isoformat())
 now = datetime.now(timezone.utc)
+
 rss_collected = []
 print("[RSS] fetching configured feeds...")
 for feed in RSS_FEEDS:
