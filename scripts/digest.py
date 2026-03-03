@@ -49,7 +49,17 @@ RSS_FEEDS = [
     "https://www.reuters.com/technology/feed/",
 ]
 
-
+NEWSLETTER_SENDER_WHITELIST = [
+    "therundown.ai",      # The Rundown AI
+    "bensbites.co",       # Ben's Bites
+    "tldr.tech",          # TLDR AI
+    "superhuman.ai",      # Superhuman AI
+    "mindstream",         # Mindstream
+    "treeofalpha",        # Tree of Alpha
+    "hello@every.to"      # Source Code
+    "hello@faveeo.com"    # AI News Weekly
+    # adicione aqui outros domínios/remetentes das newsletters que você assinou
+]
 def fetch_feed_entries(url):
     try:
         d = feedparser.parse(url)
@@ -256,6 +266,13 @@ def imap_fetch_newsletters(email_addr, app_password, days_back=7, max_messages=1
 
                 subject = decode_mime_words(msg.get("Subject") or "")
                 frm = decode_mime_words(msg.get("From") or "")
+
+                # apenas newsletters de remetentes conhecidos (whitelist)
+                frm_lower = frm.lower()
+                if not any(sender in frm_lower for sender in NEWSLETTER_SENDER_WHITELIST):
+                    # e-mails de GitHub, notificações, etc. são ignorados aqui
+                    continue
+
                 date_str = msg.get("Date")
 
                 try:
