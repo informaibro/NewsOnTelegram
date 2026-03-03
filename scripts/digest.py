@@ -348,19 +348,44 @@ def summarize_with_openai(title, content, url):
 
         openai.api_key = OPENAI_API_KEY
         prompt = (
-            "Write a concise, non-technical 50-70 word summary (3-4 short sentences) for the "
-            "following news item. Include: what happened, who (company/people), context/implication "
-            "for founders/entrepreneurs, and one short 'Founder action' line. Keep it plain English "
-            "and focus on business/market impact. Include title and url.\n\n"
-            f"Title: {title}\nURL: {url}\n\nArticle text:\n{content[:8000]}\n\nSummary:"
+            "You are an AI news brief assistant for startup founders.\n"
+            "Given the title, URL, and content of a news item, produce EXACTLY three lines in plain English:\n"
+            "1) Summary: one concise sentence about what happened.\n"
+            "2) Why it matters: one sentence explaining why this is strategically important.\n"
+            "3) Impact: one sentence about concrete implications or actions for founders/operators.\n\n"
+            "Rules:\n"
+            "- Output MUST be exactly three lines, in this format:\n"
+            "  Summary: ...\n"
+            "  Why it matters: ...\n"
+            "  Impact: ...\n"
+            "- No markdown, no bullet points, no extra text.\n"
         )
+
+        full = f"Title: {title}\nURL: {url}\n\nContent:\n{content[:8000]}"
         resp = openai.ChatCompletion.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": prompt + "\n\n" + full}],
             max_tokens=220,
             temperature=0.2,
         )
-        return resp.choices[0].message.content.strip()
+        raw = resp.choices[0].message.content.strip()
+        summary = ""
+        why = ""
+        impact = ""
+
+        for line in raw.splitlines():
+            line = line.strip()
+            if line.lower().startswith("summary:"):
+                summary = line[len("summary:"):].strip()
+            elif line.lower().startswith("why it matters:"):
+                why = line[len("why it matters:"):].strip()
+            elif line.lower().startswith("impact:"):
+                impact = line[len("impact:"):].strip()
+
+        if not (summary and why and impact):
+            raise ValueError("Could not parse three-line summary from OpenAI output")
+
+        return summary, why, impact
     except Exception as e:
         print("[OpenAI] error:", e)
         return None
@@ -402,17 +427,24 @@ def build_enriched_items(rss_items, mail_items):
             content = it.get("summary")
 
         summary = None
-        if OPENAI_API_KEY:
-            summary = summarize_with_openai(title, content or "", link or "")
+        why = None
+        impact = None
 
-        if not summary:
-            summary = simple_extract_summary(title, content or "", link or "")
+        if OPENAI_API_KEY:
+            res = summarize_with_openai(title, content or "", link or "")
+            if res is not None:
+                summary, why, impact = res
+
+        if not (summary and why and impact):
+            summary, why, impact = simple_extract_summary(title, content or "", link or "")
 
         enriched.append(
             {
                 "title": title,
                 "link": link,
                 "summary": summary,
+                "why_important": why,
+                "impact": impact,
                 "published": published,
             }
         )
@@ -421,41 +453,49 @@ def build_enriched_items(rss_items, mail_items):
 
 
 def format_message(top_items, want_more):
+    # ex.: "AI Brief — 2026-03-03"
     date_str = datetime.now().astimezone().strftime("%Y-%m-%d")
-    header = f"<b>AI Brief — {date_str}</b>\n\n"
+    header = f"AI Brief — {date_str}\n\n"
     body = ""
 
+    # Top 5
     for i, e in enumerate(top_items, start=1):
-        s = ""
-        if e.get("summary"):
-            try:
-                s = html2text.html2text(e["summary"])
-            except Exception:
-                s = str(e.get("summary"))
-        body += f"<b>{i}. {e['title']}</b>\n{s}\n\n"
+        title = e["title"]
+        link = e.get("link") or ""
+        summary = e.get("summary") or ""
+        why = e.get("why_important") or ""
+        impact = e.get("impact") or ""
 
+        body += f"{i}. *{title}*\n"
+        body += f"   Summary: {summary}\n"
+        body += f"   Why it matters: {why}\n"
+        body += f"   Impact for founders: {impact}\n"
+        if link:
+            body += f"   Link: {link}\n"
+        body += "\n"
+
+    # Seção "Want more" / aprofundar
     if want_more:
-        body += "<b>Want more (quick links)</b>\n"
+        body += "More to explore (if you want to go deeper):\n"
         for w in want_more:
-            title = w.get("title") or "More"
-            link = w.get("link") or ""
-            if link:
-                body += f"• {title} — {link}\n"
+            w_title = w.get("title") or "More"
+            w_link = w.get("link") or ""
+            if w_link:
+                body += f"- {w_title} — {w_link}\n"
             else:
-                body += f"• {title}\n"
+                body += f"- {w_title}\n"
 
     message = header + body
     if len(message) > 3800:
         message = message[:3800] + "\n\n... (truncated)"
     return message
 
-
 def post_telegram(text):
     api = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
-        "parse_mode": "HTML",
+        "parse_mode": "Markdown",  # <- era "HTML"
         "disable_web_page_preview": False,
     }
     try:
