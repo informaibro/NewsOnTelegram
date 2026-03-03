@@ -2,7 +2,12 @@ date_str = datetime.now().astimezone().strftime("%Y-%m-%d")
 header = f"<b>AI Brief — {date_str}</b>\n\n"
 body = ""
 for i, e in enumerate(top_items, start=1):
-s = html2text.html2text(e['summary']) if e.get('summary') else ''
+s = ""
+if e.get('summary'):
+try:
+s = html2text.html2text(e['summary'])
+except Exception:
+s = str(e.get('summary'))
 body += f"<b>{i}. {e['title']}</b>\n{s}\n\n"
 if want_more:
 body += "<b>Want more (quick links)</b>\n"
