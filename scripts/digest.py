@@ -56,10 +56,18 @@ NEWSLETTER_SENDER_WHITELIST = [
     "superhuman.ai",      # Superhuman AI
     "mindstream",         # Mindstream
     "treeofalpha",        # Tree of Alpha
-    "hello@every.to"      # Source Code
-    "hello@faveeo.com"    # AI News Weekly
+    "hello@every.to",     # Source Code
+    "hello@faveeo.com",   # AI News Weekly
     # adicione aqui outros domínios/remetentes das newsletters que você assinou
 ]
+
+# Textos de link genéricos que não devem ser usados como título de notícia
+GENERIC_LINK_TEXTS = {
+    "read online", "view in browser", "read more", "unsubscribe",
+    "view this email in your browser", "open in browser", "browser",
+    "here", "link", "click here", "read full story", "continue reading",
+    "see more", "learn more", "visit", "website",
+}
 def fetch_feed_entries(url):
     try:
         d = feedparser.parse(url)
@@ -183,6 +191,60 @@ def extract_links_from_html(html_text):
     return links
 
 
+def _is_generic_link_text(text):
+    if not text:
+        return True
+    return text.strip().lower() in GENERIC_LINK_TEXTS
+
+
+def extract_newsletter_items_from_html(html_text, subject):
+    """Extrai itens (título + link) do HTML da newsletter, preferindo títulos de headings e filtrando links genéricos."""
+    soup = BeautifulSoup(html_text, "html.parser")
+    items = []
+    seen_hrefs = set()
+
+    # 1) Tentar estrutura por headings: h2/h3 como título, próximo <a> como link
+    for tag in soup.find_all(["h2", "h3", "h4"]):
+        title = tag.get_text(separator=" ", strip=True)
+        if not title or len(title) < 3:
+            continue
+        # Procurar link no próprio heading ou nos próximos irmãos
+        parent = tag.parent
+        if not parent:
+            continue
+        link_elem = tag.find("a", href=True)
+        if not link_elem:
+            for sib in tag.find_next_siblings(limit=5):
+                link_elem = sib.find("a", href=True)
+                if link_elem:
+                    break
+        if link_elem:
+            href = link_elem.get("href", "").strip()
+            if href and href not in seen_hrefs and not href.startswith("#"):
+                seen_hrefs.add(href)
+                items.append({"title": title[:200], "link": href})
+
+    if items:
+        return items[:15]
+
+    # 2) Fallback: todos os links, usando subject quando o texto do link for genérico
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        text = a.get_text(separator=" ", strip=True)
+        if not href or href in seen_hrefs or href.startswith("#") or "unsubscribe" in href.lower():
+            continue
+        if _is_generic_link_text(text):
+            title = subject[:200] if subject else "Newsletter item"
+        else:
+            title = text[:200]
+        seen_hrefs.add(href)
+        items.append({"title": title, "link": href})
+        if len(items) >= 15:
+            break
+
+    return items
+
+
 def parse_message_body(msg):
     body = ""
     html = None
@@ -226,11 +288,10 @@ def parse_message_body(msg):
                 body = payload.decode("utf-8", errors="ignore")
 
     if html:
-        links = extract_links_from_html(html)
         text = BeautifulSoup(html, "html.parser").get_text(separator="\n")
-        return text, links
+        return text, html
 
-    return body, []
+    return body, None
 
 
 def imap_fetch_newsletters(email_addr, app_password, days_back=7, max_messages=100):
@@ -280,19 +341,20 @@ def imap_fetch_newsletters(email_addr, app_password, days_back=7, max_messages=1
                 except Exception:
                     published = datetime.now()
 
-                text, links = parse_message_body(msg)
+                text, html = parse_message_body(msg)
                 items = []
+                context = f"Newsletter: {subject}"
 
-                if links:
-                    for text_link, href in links[:8]:
-                        title = text_link.strip() or subject
+                if html:
+                    raw_items = extract_newsletter_items_from_html(html, subject)
+                    for it in raw_items:
                         items.append(
                             {
-                                "title": title,
-                                "link": href,
+                                "title": it["title"],
+                                "link": it["link"],
                                 "source": frm,
                                 "published": published,
-                                "context": f"Newsletter: {subject}",
+                                "context": context,
                             }
                         )
                 else:
@@ -305,7 +367,7 @@ def imap_fetch_newsletters(email_addr, app_password, days_back=7, max_messages=1
                                 "link": None,
                                 "source": frm,
                                 "published": published,
-                                "context": f"Newsletter: {subject}",
+                                "context": context,
                             }
                         )
 
@@ -449,6 +511,7 @@ def build_enriched_items(rss_items, mail_items):
         title = it.get("title") or ""
         link = it.get("link") or ""
         published = it.get("published") or datetime.now()
+        context = it.get("context") or ""
 
         content = ""
         if link:
@@ -460,13 +523,20 @@ def build_enriched_items(rss_items, mail_items):
         why = None
         impact = None
 
-        if OPENAI_API_KEY:
+        # Evitar OpenAI quando o título é genérico e não há conteúdo (evita "does not provide any content details")
+        use_openai = OPENAI_API_KEY and (
+            not _is_generic_link_text(title) or (content and len(content.strip()) >= 100)
+        )
+
+        if use_openai:
             res = summarize_with_openai(title, content or "", link or "")
             if res is not None:
                 summary, why, impact = res
 
         if not (summary and why and impact):
-            summary, why, impact = simple_extract_summary(title, content or "", link or "")
+            # Usar context (ex.: "Newsletter: ...") quando conteúdo vazio para dar algo à IA/fallback
+            fallback_content = (content or context or "").strip()
+            summary, why, impact = simple_extract_summary(title, fallback_content, link or "")
 
         enriched.append(
             {
@@ -482,19 +552,27 @@ def build_enriched_items(rss_items, mail_items):
     return enriched
 
 
+TELEGRAM_MAX_LEN = 4096
+SAFE_MAX_LEN = 4000
+
+
+def _truncate_field(text, max_len=320):
+    if not text or len(text) <= max_len:
+        return text or ""
+    return text[: max_len - 3].rstrip() + "..."
+
+
 def format_message(top_items, want_more):
-    # ex.: "AI Brief — 2026-03-03"
+    # Mensagem 1: principal (AI Brief + top 5)
     date_str = datetime.now().astimezone().strftime("%Y-%m-%d")
     header = f"AI Brief — {date_str}\n\n"
     body = ""
-
-    # Top 5
     for i, e in enumerate(top_items, start=1):
         title = e["title"]
         link = e.get("link") or ""
-        summary = e.get("summary") or ""
-        why = e.get("why_important") or ""
-        impact = e.get("impact") or ""
+        summary = _truncate_field(e.get("summary") or "", 320)
+        why = _truncate_field(e.get("why_important") or "", 280)
+        impact = _truncate_field(e.get("impact") or "", 280)
 
         body += f"{i}. *{title}*\n"
         body += f"   Summary: {summary}\n"
@@ -504,21 +582,28 @@ def format_message(top_items, want_more):
             body += f"   Link: {link}\n"
         body += "\n"
 
-    # Seção "Want more" / aprofundar
+    msg_principal = header + body
+    if len(msg_principal) > SAFE_MAX_LEN:
+        msg_principal = msg_principal[: SAFE_MAX_LEN - 20].rstrip() + "\n\n_(continua em Leia mais)_"
+
+    # Mensagem 2: Leia mais (só se houver want_more)
+    msg_leia_mais = None
     if want_more:
-        body += "More to explore (if you want to go deeper):\n"
+        header_more = f"Leia mais — AI Brief {date_str}\n\n"
+        lines = []
         for w in want_more:
             w_title = w.get("title") or "More"
             w_link = w.get("link") or ""
             if w_link:
-                body += f"- {w_title} — {w_link}\n"
+                lines.append(f"- {w_title} — {w_link}")
             else:
-                body += f"- {w_title}\n"
+                lines.append(f"- {w_title}")
+        body_more = "\n".join(lines)
+        msg_leia_mais = header_more + body_more
+        if len(msg_leia_mais) > SAFE_MAX_LEN:
+            msg_leia_mais = msg_leia_mais[: SAFE_MAX_LEN - 20].rstrip() + "\n\n_(truncado)_"
 
-    message = header + body
-    if len(message) > 3800:
-        message = message[:3800] + "\n\n... (truncated)"
-    return message
+    return msg_principal, msg_leia_mais
 
 
 def post_telegram(text):
@@ -584,11 +669,14 @@ def main():
     top5 = enriched_sorted[:5]
     want_more = enriched_sorted[5:13]
 
-    message = format_message(top5, want_more)
+    msg_principal, msg_leia_mais = format_message(top5, want_more)
 
     try:
-        resp = post_telegram(message)
-        print("[POST] Telegram post OK:", resp.get("result", {}).get("message_id"))
+        resp = post_telegram(msg_principal)
+        print("[POST] Telegram principal OK:", resp.get("result", {}).get("message_id"))
+        if msg_leia_mais:
+            resp2 = post_telegram(msg_leia_mais)
+            print("[POST] Telegram Leia mais OK:", resp2.get("result", {}).get("message_id"))
     except Exception as e:
         print("[POST] Telegram post failed:", e)
         traceback.print_exc()
