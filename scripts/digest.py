@@ -74,7 +74,10 @@ def fetch_feed_entries(url):
         entries = d.entries if "entries" in d else []
         out = []
         for e in entries:
-            title = getattr(e, "title", "") or ""
+            raw_title = getattr(e, "title", "") or ""
+            title = sanitize_title(raw_title) or raw_title.strip() or "RSS item"
+            if _looks_like_markup(title):
+                title = "RSS item"
             link = getattr(e, "link", "") or ""
             summary = getattr(e, "summary", "") or ""
             published = None
@@ -197,6 +200,39 @@ def _is_generic_link_text(text):
     return text.strip().lower() in GENERIC_LINK_TEXTS
 
 
+def _looks_like_markup(s):
+    """True se a string ainda parece markup após limpeza (rejeitar como título)."""
+    if not s or len(s.strip()) < 2:
+        return True
+    t = s.strip().lower()
+    if t.startswith("<"):
+        return True
+    for junk in ("<!doctype", "<!--", "<html", "<title>", "<head", "<body", "<meta"):
+        if junk in t[:80]:
+            return True
+    return False
+
+
+def sanitize_title(raw):
+    """Remove HTML/comentários do título e retorna texto limpo; None se inválido."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    try:
+        soup = BeautifulSoup(s, "html.parser")
+        out = soup.get_text(separator=" ", strip=True)
+    except Exception:
+        out = s
+    # Remove comentários HTML restantes (BeautifulSoup pode deixar conteúdo de comentário em alguns casos)
+    out = re.sub(r"<!--.*?-->", "", out, flags=re.DOTALL)
+    out = " ".join(out.split()).strip()
+    if not out or _looks_like_markup(out):
+        return None
+    return out if len(out) >= 2 else None
+
+
 def extract_newsletter_items_from_html(html_text, subject):
     """Extrai itens (título + link) do HTML da newsletter, preferindo títulos de headings e filtrando links genéricos."""
     soup = BeautifulSoup(html_text, "html.parser")
@@ -205,7 +241,8 @@ def extract_newsletter_items_from_html(html_text, subject):
 
     # 1) Tentar estrutura por headings: h2/h3 como título, próximo <a> como link
     for tag in soup.find_all(["h2", "h3", "h4"]):
-        title = tag.get_text(separator=" ", strip=True)
+        raw_title = tag.get_text(separator=" ", strip=True)
+        title = sanitize_title(raw_title)
         if not title or len(title) < 3:
             continue
         # Procurar link no próprio heading ou nos próximos irmãos
@@ -234,9 +271,10 @@ def extract_newsletter_items_from_html(html_text, subject):
         if not href or href in seen_hrefs or href.startswith("#") or "unsubscribe" in href.lower():
             continue
         if _is_generic_link_text(text):
-            title = subject[:200] if subject else "Newsletter item"
+            title = (subject[:200] if subject else "Newsletter item")
         else:
-            title = text[:200]
+            title = sanitize_title(text) or sanitize_title(subject) or (subject[:200] if subject else "Newsletter item")
+        title = title[:200] if title else (subject[:200] if subject else "Newsletter item")
         seen_hrefs.add(href)
         items.append({"title": title, "link": href})
         if len(items) >= 15:
@@ -359,17 +397,24 @@ def imap_fetch_newsletters(email_addr, app_password, days_back=7, max_messages=1
                         )
                 else:
                     lines = [l.strip() for l in text.splitlines() if l.strip()]
-                    candidates = [l for l in lines if 6 < len(l) < 200][:6]
+                    # Incluir linhas com tamanho razoável; sanitizar depois para aceitar <title>...</title> e rejeitar DOCTYPE/comentários
+                    candidates = [l for l in lines if 6 < len(l) < 200][:12]
                     for c in candidates:
+                        title = sanitize_title(c)
+                        # Só adicionar se o título for válido (evita itens com DOCTYPE/comentários)
+                        if not title:
+                            continue
                         items.append(
                             {
-                                "title": c,
+                                "title": title,
                                 "link": None,
                                 "source": frm,
                                 "published": published,
                                 "context": context,
                             }
                         )
+                        if len(items) >= 6:
+                            break
 
                 try:
                     M.store(num, "+FLAGS", "\\Seen")
@@ -508,10 +553,14 @@ def build_enriched_items(rss_items, mail_items):
     enriched = []
 
     for it in combined:
-        title = it.get("title") or ""
         link = it.get("link") or ""
         published = it.get("published") or datetime.now()
         context = it.get("context") or ""
+        raw_title = it.get("title") or ""
+        title = sanitize_title(raw_title)
+        if not title or _looks_like_markup(title):
+            title = context.strip() if context else "Untitled item"
+        title = (title or "Untitled item")[:500]
 
         content = ""
         if link:
