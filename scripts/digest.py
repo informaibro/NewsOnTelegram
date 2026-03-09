@@ -109,6 +109,27 @@ def fetch_feed_entries(url):
         return []
 
 
+def get_final_url(url):
+    """Resolve redirects e retorna a URL final; em erro retorna a original."""
+    if not url or not url.strip():
+        return url
+    try:
+        r = requests.get(
+            url,
+            allow_redirects=True,
+            timeout=10,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        return r.url if r.url else url
+    except Exception as e:
+        print("[REDIRECT] error resolving", url[:60], "...", e)
+        return url
+
+
+# Domínios de link de rastreamento/redirect que devem ser resolvidos para a URL final
+TRACKING_LINK_DOMAINS = ("beehiiv.com", "cur.at", "bit.ly", "t.co")
+
+
 def text_from_url(url):
     try:
         r = requests.get(
@@ -554,6 +575,8 @@ def build_enriched_items(rss_items, mail_items):
 
     for it in combined:
         link = it.get("link") or ""
+        if link and any(d in link for d in TRACKING_LINK_DOMAINS):
+            link = get_final_url(link) or link
         published = it.get("published") or datetime.now()
         context = it.get("context") or ""
         raw_title = it.get("title") or ""
