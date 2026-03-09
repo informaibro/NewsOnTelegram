@@ -34,4 +34,3 @@ jobs:
           IMAP_PORT: ${{ secrets.IMAP_PORT }}       # opcional, se você criou esse secret
         run: |
           python scripts/digest.py
-
