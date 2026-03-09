@@ -2,8 +2,8 @@ name: Daily AI Brief
 
 on:
   schedule:
-    # 12:00 UTC daily = 09:00 GMT-3 daily
-    - cron: '0 12 * * *'
+    # 09:00 UTC daily (e.g. 10:00 Lisboa, 06:00 BRT)
+    - cron: '0 9 * * *'
   workflow_dispatch:
 
 jobs:
@@ -34,3 +34,4 @@ jobs:
           IMAP_PORT: ${{ secrets.IMAP_PORT }}       # opcional, se você criou esse secret
         run: |
           python scripts/digest.py
+
