@@ -1,28 +1,23 @@
 name: Daily AI Brief
-
 on:
   schedule:
-    # 09:00 UTC daily (e.g. 10:00 Lisboa, 06:00 BRT)
+    # 09:00 UTC daily (10:00 Lisboa, 06:00 BRT)
     - cron: '0 9 * * *'
   workflow_dispatch:
-
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
       - name: Run digest script
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -30,7 +25,5 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           MAIL_EMAIL: ${{ secrets.MAIL_EMAIL }}
           MAIL_APP_PASSWORD: ${{ secrets.MAIL_APP_PASSWORD }}
-          IMAP_SERVER: ${{ secrets.IMAP_SERVER }}   # opcional, se você criou esse secret
-          IMAP_PORT: ${{ secrets.IMAP_PORT }}       # opcional, se você criou esse secret
         run: |
           python scripts/digest.py
