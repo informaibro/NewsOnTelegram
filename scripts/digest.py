@@ -52,18 +52,49 @@ RSS_FEEDS = [
     "https://www.reuters.com/technology/feed/",
 ]
 
-AI_KEYWORDS = [
-    "ai", "artificial intelligence", "machine learning", "ml", "llm",
-    "large language model", "foundation model", "multimodal", "agent",
-    "anthropic", "openai", "chatgpt", "claude", "gpt", "gemini", "mistral",
-    "meta ai", "llama", "model", "inference", "training", "generative",
-    "prompt", "embedding", "vector database", "edge ai", "ai product",
-    "ai startup", "ai funding", "ai regulation", "responsible ai",
-    "safety", "alignment", "ai chip", "benchmark", "evaluation",
-    "nvidia", "gpu", "tpu", "ai lab", "reasoning model", "context window",
+# ---------------------------------------------------------------------------
+# Two-tier keyword filter
+#
+# SPECIFIC  — unambiguously about AI. One match in title = pass.
+# GENERIC   — too broad alone ("model", "training", "agent"). Only count if
+#             the title ALSO contains a specific keyword.
+#
+# Rule: pass if
+#   (a) title has >= 1 specific keyword, OR
+#   (b) title has >= 1 generic + summary has >= 1 specific keyword
+# ---------------------------------------------------------------------------
+AI_SPECIFIC = [
+    # Labs / companies
+    "anthropic", "openai", "deepmind", "mistral", "cohere", "groq", "xai",
+    "hugging face", "stability ai", "midjourney", "perplexity",
+    # Named models
+    "chatgpt", "claude", "gemini", "llama", "gpt-4", "gpt-5", "gpt-4o",
+    "dall-e", "sora", "grok", "copilot", "o1", "o3", "o4",
+    "stable diffusion", "flux", "veo", "imagen",
+    # Unambiguous AI terms
+    "llm", "large language model", "foundation model", "generative ai",
+    "artificial intelligence", "machine learning", "multimodal model",
+    "ai model", "ai chip", "ai startup", "ai funding", "ai regulation",
+    "ai safety", "ai agent", "ai lab", "reasoning model", "context window",
+    "vector database", "ai product", "responsible ai", "ai alignment",
+    "inference cost", "ai benchmark",
+    # Hardware clearly tied to AI
+    "h100", "h200", "blackwell", "hopper", "tpu",
 ]
-AI_KEYWORDS_RE = re.compile(
-    r"\b(" + r"|".join(re.escape(k) for k in AI_KEYWORDS) + r")\b",
+
+AI_GENERIC = [
+    # Only pass when combined with a specific in the summary
+    "ai", "ml", "model", "inference", "training", "generative",
+    "prompt", "embedding", "agent", "alignment", "safety",
+    "benchmark", "evaluation", "gpu", "nvidia",
+]
+
+_SPECIFIC_RE = re.compile(
+    r"\b(" + r"|".join(re.escape(k) for k in AI_SPECIFIC) + r")\b",
+    flags=re.I,
+)
+_GENERIC_RE = re.compile(
+    r"\b(" + r"|".join(re.escape(k) for k in AI_GENERIC) + r")\b",
     flags=re.I,
 )
 
@@ -93,10 +124,15 @@ def is_english(text):
 
 
 def contains_ai_signal(title, summary=""):
-    target = f"{title}\n{summary}"
-    if not target.strip() or not is_english(target):
+    if not title or not is_english(f"{title}\n{summary}"):
         return False
-    return bool(AI_KEYWORDS_RE.search(target))
+    # (a) specific keyword in title — always pass
+    if _SPECIFIC_RE.search(title):
+        return True
+    # (b) generic keyword in title + specific keyword in summary
+    if _GENERIC_RE.search(title) and _SPECIFIC_RE.search(summary or ""):
+        return True
+    return False
 
 
 # Known AI entities — companies, models, people frequently in headlines
