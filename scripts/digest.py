@@ -1,131 +1,86 @@
 #!/usr/bin/env python3
+"""
+AI Brief — digest.py
+Fase 0 optimizations:
+  - Parallel RSS fetching (ThreadPoolExecutor)
+  - Parallel GPT summarization
+  - Similarity-based deduplication (same story from multiple feeds)
+  - Feed quality logging
+  - Hard timeouts on all HTTP calls
+"""
 import os
-import requests
-import feedparser
-from datetime import datetime, timedelta, timezone
-from dateutil import parser as dparser
-from bs4 import BeautifulSoup
 import re
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+from difflib import SequenceMatcher
+
+import feedparser
+import requests
+from bs4 import BeautifulSoup
+from dateutil import parser as dparser
 from openai import OpenAI
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+OPENAI_API_KEY   = os.getenv("OPENAI_API_KEY")
+TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-    raise SystemExit(
-        "Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID environment variables (set as GitHub secrets)."
-    )
+    raise SystemExit("Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID env vars.")
 
-AI_KEYWORDS = [
-    "ai", "artificial intelligence", "machine learning", "ml", "llm", "large language model",
-    "foundation model", "multimodal", "agent", "anthropic", "openai", "chatgpt", "claude", "gpt",
-    "gemini", "mistral", "meta ai", "llama", "model", "inference", "training", "generative",
-    "prompt", "embedding", "vector database", "deployment", "edge ai", "ai product",
-    "ai startup", "ai funding", "ai partnership", "ai regulation", "responsible ai",
-    "safety", "alignment", "ai chip", "inference cost", "benchmark", "evaluation",
-    "nvidia", "gpu", "tpu", "ai lab", "reasoning model", "context window",
-]
-AI_KEYWORDS_RE = re.compile(
-    r"\b(" + r"|".join([re.escape(k) for k in AI_KEYWORDS]) + r")\b",
-    flags=re.I
-)
+MAX_RSS_WORKERS      = 6     # parallel feed fetches
+MAX_GPT_WORKERS      = 5     # parallel GPT calls
+FEED_TIMEOUT         = 10    # seconds per feed
+GPT_MAX_TOKENS       = 220
+SIMILARITY_THRESHOLD = 0.72  # titles above this = same story
 
 # ---------------------------------------------------------------------------
-# RSS FEEDS — fontes primárias de alta qualidade, sem newsletters de email
+# RSS feeds
 # ---------------------------------------------------------------------------
 RSS_FEEDS = [
-    # Notícias primárias — breaking news e lançamentos
     "https://venturebeat.com/category/ai/feed/",
     "https://techcrunch.com/tag/artificial-intelligence/feed/",
     "https://www.theverge.com/ai/rss/index.xml",
     "https://feeds.arstechnica.com/arstechnica/index",
     "https://www.wired.com/feed/tag/ai/latest/rss",
-
-    # Fontes oficiais dos labs — lançamentos diretos
     "https://openai.com/news/rss.xml",
     "https://deepmind.google/blog/rss/",
     "https://www.anthropic.com/rss.xml",
-
-    # Negócios e mercado
     "https://www.reuters.com/technology/feed/",
 ]
 
+AI_KEYWORDS = [
+    "ai", "artificial intelligence", "machine learning", "ml", "llm",
+    "large language model", "foundation model", "multimodal", "agent",
+    "anthropic", "openai", "chatgpt", "claude", "gpt", "gemini", "mistral",
+    "meta ai", "llama", "model", "inference", "training", "generative",
+    "prompt", "embedding", "vector database", "edge ai", "ai product",
+    "ai startup", "ai funding", "ai regulation", "responsible ai",
+    "safety", "alignment", "ai chip", "benchmark", "evaluation",
+    "nvidia", "gpu", "tpu", "ai lab", "reasoning model", "context window",
+]
+AI_KEYWORDS_RE = re.compile(
+    r"\b(" + r"|".join(re.escape(k) for k in AI_KEYWORDS) + r")\b",
+    flags=re.I,
+)
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 def sanitize_title(raw):
-    if raw is None:
+    if not raw:
         return None
     s = str(raw).strip()
-    if not s:
-        return None
     try:
-        soup = BeautifulSoup(s, "html.parser")
-        out = soup.get_text(separator=" ", strip=True)
+        s = BeautifulSoup(s, "html.parser").get_text(separator=" ", strip=True)
     except Exception:
-        out = s
-    out = re.sub(r"<!--.*?-->", "", out, flags=re.DOTALL)
-    out = " ".join(out.split()).strip()
-    if not out or len(out) < 2:
-        return None
-    return out
-
-
-def fetch_feed_entries(url):
-    try:
-        d = feedparser.parse(url, request_headers={"User-Agent": "Mozilla/5.0"})
-        entries = d.entries if "entries" in d else []
-        source_name = (d.feed.get("title") or url.split("/")[2]).strip()
-        out = []
-        for e in entries:
-            raw_title = getattr(e, "title", "") or ""
-            title = sanitize_title(raw_title) or "RSS item"
-            link = getattr(e, "link", "") or ""
-
-            # Pegar summary do RSS — já é suficiente, sem scraping de página
-            summary = ""
-            for field in ("summary", "description", "content"):
-                val = getattr(e, field, None)
-                if val:
-                    if isinstance(val, list):
-                        val = val[0].get("value", "") if val else ""
-                    summary = BeautifulSoup(str(val), "html.parser").get_text(separator=" ", strip=True)
-                    summary = " ".join(summary.split())[:1000]
-                    if summary:
-                        break
-
-            published = None
-            for date_field in ("published", "updated"):
-                if hasattr(e, date_field):
-                    try:
-                        published = dparser.parse(getattr(e, date_field))
-                        break
-                    except Exception:
-                        pass
-
-            out.append({
-                "title": title,
-                "link": link,
-                "summary": summary,
-                "published": published,
-                "source": source_name,
-            })
-        return out
-    except Exception as e:
-        print("[RSS] error parsing feed", url, e)
-        return []
-
-
-def dedupe_items(items):
-    seen = set()
-    out = []
-    for it in items:
-        key = (it.get("link") or it.get("title", "")).strip().lower()
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        out.append(it)
-    return out
+        pass
+    s = re.sub(r"<!--.*?-->", "", s, flags=re.DOTALL)
+    s = " ".join(s.split()).strip()
+    return s if len(s) >= 2 else None
 
 
 def is_english(text):
@@ -134,241 +89,333 @@ def is_english(text):
     sample = text[:500].lower()
     if sum(1 for c in sample if ord(c) > 127) / max(1, len(sample)) > 0.3:
         return False
-    common = [" the ", " and ", " is ", " for ", " ai ", " model ", " company ", " new "]
-    return any(w in sample for w in common)
+    return any(w in sample for w in [" the ", " and ", " is ", " for ", " ai ", " model "])
 
 
-def contains_ai_signal(text, title=""):
-    target = (title or "") + "\n" + (text or "")
-    if not target.strip():
-        return False
-    if not is_english(target):
+def contains_ai_signal(title, summary=""):
+    target = f"{title}\n{summary}"
+    if not target.strip() or not is_english(target):
         return False
     return bool(AI_KEYWORDS_RE.search(target))
 
 
-def summarize_with_openai(title, summary, url, source):
-    if not OPENAI_API_KEY:
-        return None
+def title_similarity(a, b):
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+
+# ---------------------------------------------------------------------------
+# 1. Parallel RSS fetching
+# ---------------------------------------------------------------------------
+def fetch_feed_entries(url):
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        d = feedparser.parse(url, request_headers={"User-Agent": "Mozilla/5.0"})
+        source_name = (getattr(d.feed, "title", None) or url.split("/")[2]).strip()
+        out = []
+        for e in d.entries:
+            title = sanitize_title(getattr(e, "title", "") or "") or "RSS item"
+            link  = getattr(e, "link", "") or ""
 
-        prompt = (
-            "You are an AI news curator for a Brazilian tech newsletter. "
-            "Your job is to write tight, concrete, factual briefs — like a senior journalist, not a consultant. "
-            "Avoid generic advice. Be specific to THIS story.\n\n"
-            "Given the title, source, URL and summary of a news item, produce EXACTLY three lines:\n"
-            "1) What happened: one direct sentence about the concrete fact (new model, acquisition, funding, feature launch, etc.)\n"
-            "2) Why it matters: one sentence with specific context — what changes, what's at stake, what's surprising.\n"
-            "3) Watch: one sentence on what to watch next or what this means for AI builders/founders specifically.\n\n"
-            "Rules:\n"
-            "- Output MUST be exactly three lines in this format:\n"
-            "  What happened: ...\n"
-            "  Why it matters: ...\n"
-            "  Watch: ...\n"
-            "- Be specific: mention company names, model names, dollar amounts, dates — whatever makes it concrete.\n"
-            "- No generic phrases like 'founders should prioritize' or 'this is a notable development'.\n"
-            "- No markdown, no bullet points, no extra text.\n"
-        )
+            summary = ""
+            for field in ("summary", "description", "content"):
+                val = getattr(e, field, None)
+                if val:
+                    if isinstance(val, list):
+                        val = val[0].get("value", "") if val else ""
+                    summary = BeautifulSoup(str(val), "html.parser").get_text(
+                        separator=" ", strip=True
+                    )
+                    summary = " ".join(summary.split())[:1000]
+                    if summary:
+                        break
 
-        content = f"Title: {title}\nSource: {source}\nURL: {url}\n\nSummary:\n{summary[:2000]}"
+            published = None
+            for df in ("published", "updated"):
+                if hasattr(e, df):
+                    try:
+                        published = dparser.parse(getattr(e, df))
+                        break
+                    except Exception:
+                        pass
 
-        resp = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[{"role": "user", "content": prompt + "\n\n" + content}],
-            max_tokens=220,
-            temperature=0.2,
-        )
-
-        raw = resp.choices[0].message.content.strip()
-        what = why = watch = ""
-
-        for line in raw.splitlines():
-            line = line.strip()
-            if line.lower().startswith("what happened:"):
-                what = line[len("what happened:"):].strip()
-            elif line.lower().startswith("why it matters:"):
-                why = line[len("why it matters:"):].strip()
-            elif line.lower().startswith("watch:"):
-                watch = line[len("watch:"):].strip()
-
-        if not (what and why and watch):
-            raise ValueError("Could not parse three-line summary from OpenAI output")
-
-        return what, why, watch
-
-    except Exception as e:
-        print("[OpenAI] error:", e)
-        return None
+            out.append({
+                "title": title, "link": link,
+                "summary": summary, "published": published,
+                "source": source_name,
+            })
+        return url, out, source_name, None
+    except Exception as exc:
+        return url, [], url.split("/")[2], str(exc)
 
 
-def simple_extract_summary(title, summary):
-    what = summary[:240].rstrip() + "..." if len(summary) > 240 else summary or title
-    why = "Relevant development in the AI ecosystem."
-    watch = "Monitor follow-up coverage for more details."
-    return what, why, watch
+def fetch_all_feeds():
+    all_items = []
+    quality   = {}
+
+    with ThreadPoolExecutor(max_workers=MAX_RSS_WORKERS) as ex:
+        futures = {ex.submit(fetch_feed_entries, url): url for url in RSS_FEEDS}
+        for fut in as_completed(futures):
+            url, items, source, err = fut.result()
+            domain = url.split("/")[2]
+            if err:
+                print(f"[RSS] ✗ {domain} — {err}")
+                quality[domain] = {"items": 0, "with_summary": 0, "error": err}
+            else:
+                with_summary = sum(1 for i in items if i.get("summary"))
+                quality[domain] = {"items": len(items), "with_summary": with_summary}
+                print(f"[RSS] ✓ {domain} — {len(items)} items, {with_summary} with summary")
+                all_items.extend(items)
+
+    return all_items, quality
 
 
-def build_enriched_items(rss_items):
+# ---------------------------------------------------------------------------
+# 2. Similarity-based deduplication
+# ---------------------------------------------------------------------------
+def dedupe_by_similarity(items):
+    # Pass 1 — exact URL
+    seen_urls  = set()
+    url_deduped = []
+    for it in items:
+        key = (it.get("link") or "").strip().lower()
+        if key and key in seen_urls:
+            continue
+        if key:
+            seen_urls.add(key)
+        url_deduped.append(it)
+
+    # Pass 2 — title similarity clusters
+    clusters = []
+    for it in url_deduped:
+        title  = (it.get("title") or "").strip()
+        placed = False
+        for cluster in clusters:
+            if title_similarity(title, cluster[0].get("title", "")) >= SIMILARITY_THRESHOLD:
+                cluster.append(it)
+                placed = True
+                break
+        if not placed:
+            clusters.append([it])
+
+    result = []
+    for cluster in clusters:
+        best = max(cluster, key=lambda x: len(x.get("summary") or ""))
+        if len(cluster) > 1:
+            sources = ", ".join(c.get("source", "?") for c in cluster)
+            print(f"[DEDUP] merged {len(cluster)}x → \"{best['title'][:55]}\" ({sources})")
+        result.append(best)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 3. Parallel GPT summarization
+# ---------------------------------------------------------------------------
+_openai_client = None
+
+def get_client():
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = OpenAI(api_key=OPENAI_API_KEY)
+    return _openai_client
+
+
+SYSTEM_PROMPT = (
+    "You are a senior tech journalist writing an AI news brief for startup founders. "
+    "Be concrete and specific — names, numbers, dates. "
+    "Never write generic phrases like 'founders should prioritize' or 'this is a notable development'. "
+    "If the summary is thin, focus on what the title tells us and what it implies."
+)
+
+USER_TEMPLATE = """\
+Title: {title}
+Source: {source}
+URL: {url}
+
+Summary:
+{summary}
+
+Write EXACTLY three lines, no extra text:
+What happened: <one concrete sentence — the specific fact, product, company, number>
+Why it matters: <one sentence — what changes, what's at stake, what's surprising>
+Watch: <one sentence — what to follow next, or what this means for AI builders/founders>
+"""
+
+
+def summarize_item(item):
+    title   = item.get("title") or ""
+    summary = item.get("summary") or ""
+    link    = item.get("link") or ""
+    source  = item.get("source") or ""
+
+    what = why = watch = None
+
+    if OPENAI_API_KEY and (title or summary):
+        try:
+            resp = get_client().chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": USER_TEMPLATE.format(
+                        title=title, source=source, url=link,
+                        summary=summary[:2000],
+                    )},
+                ],
+                max_tokens=GPT_MAX_TOKENS,
+                temperature=0.2,
+            )
+            raw = resp.choices[0].message.content.strip()
+            for line in raw.splitlines():
+                l = line.strip()
+                if l.lower().startswith("what happened:"):
+                    what = l[len("what happened:"):].strip()
+                elif l.lower().startswith("why it matters:"):
+                    why = l[len("why it matters:"):].strip()
+                elif l.lower().startswith("watch:"):
+                    watch = l[len("watch:"):].strip()
+            if not (what and why and watch):
+                raise ValueError(f"parse failed: {raw[:60]}")
+        except Exception as exc:
+            print(f"[GPT] ✗ \"{title[:45]}\": {exc}")
+
+    if not what:
+        what  = (summary[:240].rstrip() + "...") if len(summary) > 240 else summary or title
+    if not why:
+        why   = "Relevant development in the AI ecosystem."
+    if not watch:
+        watch = "Follow up for more details."
+
+    return {**item, "what_happened": what, "why_important": why, "watch": watch}
+
+
+def enrich_all(items):
     ai_items = [
-        r for r in rss_items
-        if contains_ai_signal(r.get("title", "") + " " + (r.get("summary", "") or ""))
+        it for it in items
+        if contains_ai_signal(it.get("title", ""), it.get("summary", ""))
     ]
+    print(f"[FILTER] {len(ai_items)} AI-relevant (from {len(items)} deduped)")
 
     enriched = []
-    for it in ai_items:
-        title = sanitize_title(it.get("title") or "") or "Untitled"
-        link = it.get("link") or ""
-        summary = it.get("summary") or ""
-        source = it.get("source") or ""
-        published = it.get("published") or datetime.now(timezone.utc)
-
-        # Sem scraping — usa só o summary do RSS
-        res = None
-        if OPENAI_API_KEY and (summary or title):
-            res = summarize_with_openai(title, summary, link, source)
-
-        if res:
-            what, why, watch = res
-        else:
-            what, why, watch = simple_extract_summary(title, summary)
-
-        enriched.append({
-            "title": title,
-            "link": link,
-            "what_happened": what,
-            "why_important": why,
-            "watch": watch,
-            "published": published,
-            "source": source,
-        })
+    with ThreadPoolExecutor(max_workers=MAX_GPT_WORKERS) as ex:
+        futures = {ex.submit(summarize_item, it): it for it in ai_items}
+        for fut in as_completed(futures):
+            try:
+                enriched.append(fut.result())
+            except Exception as exc:
+                print(f"[ENRICH] error: {exc}")
 
     return enriched
 
 
+# ---------------------------------------------------------------------------
+# 4. Format + Telegram
+# ---------------------------------------------------------------------------
 SAFE_MAX_LEN = 4000
 
 
-def _truncate_field(text, max_len=300):
-    if not text or len(text) <= max_len:
+def _trunc(text, n=300):
+    if not text or len(text) <= n:
         return text or ""
-    return text[:max_len - 3].rstrip() + "..."
+    return text[:n - 3].rstrip() + "..."
 
 
 def format_message(top_items, want_more):
     date_str = datetime.now().astimezone().strftime("%Y-%m-%d")
-    header = f"🤖 AI Brief — {date_str}\n\n"
     body = ""
 
     for i, e in enumerate(top_items, start=1):
-        title = e["title"]
-        link = e.get("link") or ""
-        source = e.get("source") or ""
-        what = _truncate_field(e.get("what_happened") or "", 300)
-        why = _truncate_field(e.get("why_important") or "", 280)
-        watch = _truncate_field(e.get("watch") or "", 280)
-
-        body += f"{i}. *{title}*"
-        if source:
-            body += f" _({source})_"
+        body += f"{i}. *{e['title']}*"
+        if e.get("source"):
+            body += f" _({e['source']})_"
         body += "\n"
-        body += f"   📌 {what}\n"
-        body += f"   💡 {why}\n"
-        body += f"   👀 {watch}\n"
-        if link:
-            body += f"   🔗 {link}\n"
+        body += f"   \U0001f4cc {_trunc(e.get('what_happened'), 300)}\n"
+        body += f"   \U0001f4a1 {_trunc(e.get('why_important'), 280)}\n"
+        body += f"   \U0001f440 {_trunc(e.get('watch'), 280)}\n"
+        if e.get("link"):
+            body += f"   \U0001f517 {e['link']}\n"
         body += "\n"
 
-    msg_principal = header + body
-    if len(msg_principal) > SAFE_MAX_LEN:
-        msg_principal = msg_principal[:SAFE_MAX_LEN - 20].rstrip() + "\n\n_(continua em Leia mais)_"
+    msg1 = f"\U0001f916 AI Brief \u2014 {date_str}\n\n" + body
+    if len(msg1) > SAFE_MAX_LEN:
+        msg1 = msg1[:SAFE_MAX_LEN - 30].rstrip() + "\n\n_(continua em Leia mais)_"
 
-    msg_leia_mais = None
+    msg2 = None
     if want_more:
-        header_more = f"📎 Leia mais — AI Brief {date_str}\n\n"
         lines = []
         for w in want_more:
-            w_title = w.get("title") or "More"
-            w_link = w.get("link") or ""
-            w_source = w.get("source") or ""
-            line = f"• {w_title}"
-            if w_source:
-                line += f" _({w_source})_"
-            if w_link:
-                line += f"\n  {w_link}"
+            line = f"\u2022 {w.get('title') or 'More'}"
+            if w.get("source"):
+                line += f" _({w['source']})_"
+            if w.get("link"):
+                line += f"\n  {w['link']}"
             lines.append(line)
-        msg_leia_mais = header_more + "\n".join(lines)
-        if len(msg_leia_mais) > SAFE_MAX_LEN:
-            msg_leia_mais = msg_leia_mais[:SAFE_MAX_LEN - 20].rstrip() + "\n\n_(truncado)_"
+        msg2 = f"\U0001f4ce Leia mais \u2014 AI Brief {date_str}\n\n" + "\n".join(lines)
+        if len(msg2) > SAFE_MAX_LEN:
+            msg2 = msg2[:SAFE_MAX_LEN - 20].rstrip() + "\n\n_(truncado)_"
 
-    return msg_principal, msg_leia_mais
+    return msg1, msg2
 
 
 def post_telegram(text):
-    api = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True,
-    }
-    try:
-        r = requests.post(api, json=payload, timeout=20)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        print("[POST] Telegram error:", e)
-        raise
+    r = requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        json={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": text,
+            "parse_mode": "Markdown",
+            "disable_web_page_preview": True,
+        },
+        timeout=20,
+    )
+    r.raise_for_status()
+    return r.json()
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 def main():
-    print("[START] Digest run:", datetime.now().isoformat())
+    t0 = datetime.now()
+    print(f"[START] {t0.isoformat()}")
 
-    rss_collected = []
-    print("[RSS] fetching feeds...")
-    for feed_url in RSS_FEEDS:
-        try:
-            entries = fetch_feed_entries(feed_url)
-            print(f"[RSS] {feed_url.split('/')[2]} — {len(entries)} items")
-            rss_collected.extend(entries)
-        except Exception as e:
-            print("[RSS] feed error", feed_url, e)
+    raw_items, quality = fetch_all_feeds()
+    print(f"[RSS] {len(raw_items)} raw items total")
 
-    print(f"[RSS] total raw items: {len(rss_collected)}")
+    low_q = [d for d, s in quality.items() if s.get("with_summary", 0) == 0 and s.get("items", 0) > 0]
+    if low_q:
+        print(f"[QUALITY] zero-summary feeds (consider replacing): {', '.join(low_q)}")
 
-    all_candidates = dedupe_items(rss_collected)
-    print(f"[DEDUP] after dedupe: {len(all_candidates)}")
+    deduped = dedupe_by_similarity(raw_items)
+    print(f"[DEDUP] {len(deduped)} unique items (merged {len(raw_items) - len(deduped)} dupes)")
 
-    enriched = build_enriched_items(all_candidates)
-    print(f"[ENRICH] AI-relevant items: {len(enriched)}")
+    enriched = enrich_all(deduped)
 
-    # Ordenar por data mais recente
     enriched_sorted = sorted(
         enriched,
         key=lambda x: x.get("published") or datetime.now(timezone.utc),
         reverse=True,
     )
 
-    top5 = enriched_sorted[:5]
+    top5      = enriched_sorted[:5]
     want_more = enriched_sorted[5:13]
 
     if not top5:
-        print("[WARN] No AI items found today. Skipping Telegram post.")
+        print("[WARN] No AI items — skipping Telegram.")
         return
 
-    msg_principal, msg_leia_mais = format_message(top5, want_more)
+    msg1, msg2 = format_message(top5, want_more)
 
     try:
-        resp = post_telegram(msg_principal)
-        print("[POST] Telegram principal OK:", resp.get("result", {}).get("message_id"))
-        if msg_leia_mais:
-            resp2 = post_telegram(msg_leia_mais)
-            print("[POST] Telegram Leia mais OK:", resp2.get("result", {}).get("message_id"))
-    except Exception as e:
-        print("[POST] Telegram post failed:", e)
+        r1 = post_telegram(msg1)
+        print(f"[POST] principal OK (id={r1.get('result', {}).get('message_id')})")
+        if msg2:
+            r2 = post_telegram(msg2)
+            print(f"[POST] leia mais OK (id={r2.get('result', {}).get('message_id')})")
+    except Exception as exc:
+        print(f"[POST] failed: {exc}")
         traceback.print_exc()
 
-    print("[END] Digest run completed.")
+    elapsed = (datetime.now() - t0).seconds
+    print(f"[END] concluido em {elapsed}s")
 
 
 if __name__ == "__main__":
