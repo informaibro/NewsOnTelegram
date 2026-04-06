@@ -99,6 +99,45 @@ def contains_ai_signal(title, summary=""):
     return bool(AI_KEYWORDS_RE.search(target))
 
 
+# Known AI entities — companies, models, people frequently in headlines
+AI_ENTITIES = {
+    # Companies / labs
+    "openai", "anthropic", "google", "deepmind", "meta", "microsoft", "nvidia",
+    "apple", "amazon", "mistral", "cohere", "stability", "midjourney", "hugging face",
+    "perplexity", "groq", "xai", "inflection", "runway", "scale ai", "databricks",
+    # Models
+    "gpt", "gpt-4", "gpt-5", "claude", "gemini", "llama", "copilot", "dall-e",
+    "sora", "grok", "o1", "o3", "o4", "sonnet", "opus", "haiku", "mistral",
+    "stable diffusion", "flux", "veo", "imagen",
+    # People
+    "altman", "musk", "pichai", "nadella", "lecun", "hinton", "bengio",
+    "amodei", "huang", "zuckerberg",
+    # Hardware
+    "gpu", "tpu", "chip", "h100", "h200", "blackwell", "hopper",
+    # Topics that make a story unique
+    "ipo", "acquisition", "funding", "layoffs", "lawsuit", "regulation",
+    "open source", "api", "chatgpt", "agents", "reasoning",
+}
+
+
+def extract_entities(title):
+    """Return set of known entities found in title (lowercase)."""
+    t = title.lower()
+    found = set()
+    for entity in AI_ENTITIES:
+        if entity in t:
+            found.add(entity)
+    # Also extract capitalised words (likely proper nouns not in our list)
+    for word in re.findall(r'\b[A-Z][a-z]{2,}\b', title):
+        found.add(word.lower())
+    return found
+
+
+def entity_overlap(a, b):
+    """Number of shared entities between two titles."""
+    return len(extract_entities(a) & extract_entities(b))
+
+
 def title_similarity(a, b):
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
@@ -169,11 +208,37 @@ def fetch_all_feeds():
 
 
 # ---------------------------------------------------------------------------
-# 2. Similarity-based deduplication
+# 2. Entity-aware deduplication
 # ---------------------------------------------------------------------------
+def is_same_story(title_a, title_b):
+    """
+    Two titles are the same story if ANY of these conditions is true:
+      1. String similarity >= SIMILARITY_THRESHOLD (same phrasing)
+      2. Entity overlap >= 2 (same companies/models/people involved)
+      3. One title is a substring of the other (rephrased headline)
+    """
+    a, b = title_a.lower().strip(), title_b.lower().strip()
+    if not a or not b:
+        return False
+    # Condition 1 — character similarity
+    if title_similarity(a, b) >= SIMILARITY_THRESHOLD:
+        return True
+    # Condition 2 — shared entities
+    if entity_overlap(title_a, title_b) >= 2:
+        return True
+    # Condition 3 — substring (one headline contained in the other)
+    if len(a) > 20 and len(b) > 20:
+        shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+        # Use key words from shorter title
+        words = [w for w in shorter.split() if len(w) > 4]
+        if len(words) >= 3 and sum(1 for w in words if w in longer) >= len(words) * 0.7:
+            return True
+    return False
+
+
 def dedupe_by_similarity(items):
     # Pass 1 — exact URL
-    seen_urls  = set()
+    seen_urls   = set()
     url_deduped = []
     for it in items:
         key = (it.get("link") or "").strip().lower()
@@ -183,13 +248,14 @@ def dedupe_by_similarity(items):
             seen_urls.add(key)
         url_deduped.append(it)
 
-    # Pass 2 — title similarity clusters
+    # Pass 2 — entity-aware story clustering
     clusters = []
     for it in url_deduped:
         title  = (it.get("title") or "").strip()
         placed = False
         for cluster in clusters:
-            if title_similarity(title, cluster[0].get("title", "")) >= SIMILARITY_THRESHOLD:
+            rep_title = cluster[0].get("title", "")
+            if is_same_story(title, rep_title):
                 cluster.append(it)
                 placed = True
                 break
@@ -198,6 +264,7 @@ def dedupe_by_similarity(items):
 
     result = []
     for cluster in clusters:
+        # Keep item with richest summary; use most recent pub date
         best = max(cluster, key=lambda x: len(x.get("summary") or ""))
         if len(cluster) > 1:
             sources = ", ".join(c.get("source", "?") for c in cluster)
