@@ -150,9 +150,15 @@ AI_ENTITIES = {
     "amodei", "huang", "zuckerberg",
     # Hardware
     "gpu", "tpu", "chip", "h100", "h200", "blackwell", "hopper",
+    # Action verbs — two headlines with same company + verb = same story
+    "acquires", "buys", "acquired", "merger",
+    "launches", "releases", "unveils", "announces",
+    "raises", "layoffs", "sues", "bans",
     # Topics that make a story unique
-    "ipo", "acquisition", "funding", "layoffs", "lawsuit", "regulation",
+    "ipo", "acquisition", "funding", "lawsuit", "regulation",
     "open source", "api", "chatgpt", "agents", "reasoning",
+    # Known media properties
+    "tbpn", "the batch", "lex fridman", "all-in",
 }
 
 
@@ -390,6 +396,8 @@ def summarize_item(item):
     return {**item, "what_happened": what, "why_important": why, "watch": watch}
 
 
+MAX_ITEMS_PER_SOURCE = 3  # cap per feed to avoid one source dominating
+
 def enrich_all(items):
     ai_items = [
         it for it in items
@@ -397,9 +405,22 @@ def enrich_all(items):
     ]
     print(f"[FILTER] {len(ai_items)} AI-relevant (from {len(items)} deduped)")
 
+    # Cap items per source so one feed cannot dominate the digest
+    source_counts: dict = {}
+    capped = []
+    for it in ai_items:
+        src = (it.get("source") or "").strip()
+        source_counts[src] = source_counts.get(src, 0) + 1
+        if source_counts[src] <= MAX_ITEMS_PER_SOURCE:
+            capped.append(it)
+        else:
+            pass  # silently drop excess items from this source
+    if len(capped) < len(ai_items):
+        print(f"[CAP] dropped {len(ai_items) - len(capped)} items (source cap={MAX_ITEMS_PER_SOURCE})")
+
     enriched = []
     with ThreadPoolExecutor(max_workers=MAX_GPT_WORKERS) as ex:
-        futures = {ex.submit(summarize_item, it): it for it in ai_items}
+        futures = {ex.submit(summarize_item, it): it for it in capped}
         for fut in as_completed(futures):
             try:
                 enriched.append(fut.result())
