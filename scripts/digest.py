@@ -47,7 +47,7 @@ RSS_FEEDS = [
     "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
     "https://feeds.arstechnica.com/arstechnica/index",
     "https://www.wired.com/feed/tag/ai/latest/rss",
-    "https://apnews.com/rss/technology",
+    "https://www.technologyreview.com/feed/",
     # Official labs with working RSS
     "https://openai.com/news/rss.xml",
     "https://deepmind.google/blog/rss.xml",
@@ -56,14 +56,14 @@ RSS_FEEDS = [
     # High-signal aggregators
     "https://simonwillison.net/atom/everything/",
     "https://news.ycombinator.com/rss",
-    "https://www.reddit.com/r/MachineLearning/top/.rss?t=week&limit=10",
+    "https://hnrss.org/frontpage?points=100&q=AI+OR+LLM+OR+machine+learning",
     "https://www.404media.co/rss",
     # Hardware & infra
     "https://feeds.feedburner.com/nvidiablog",
-    "https://blogs.microsoft.com/ai/search/feed/rss2/",
+    "https://blogs.microsoft.com/feed/",
     # Business & research
-    "https://semafor.com/feed",
-    "https://www.deeplearning.ai/the-batch/feed/",
+    "https://siliconangle.com/category/ai/feed/",
+    "https://www.deeplearning.ai/the-batch/rss/",
     # a16z sem RSS funcional — ver SCRAPE_SOURCES
 ]
 
