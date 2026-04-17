@@ -37,6 +37,10 @@ FEED_TIMEOUT         = 10    # seconds per feed
 GPT_MAX_TOKENS       = 220
 SIMILARITY_THRESHOLD = 0.72  # titles above this = same story
 
+AUTHOR_EMAIL  = os.getenv("AUTHOR_EMAIL", "cripto.nita.moedas@gmail.com")
+SMTP_EMAIL    = os.getenv("MAIL_EMAIL")      # Gmail sender (already in secrets)
+SMTP_PASSWORD = os.getenv("MAIL_APP_PASSWORD")  # Gmail App Password (already in secrets)
+
 # ---------------------------------------------------------------------------
 # RSS feeds
 # ---------------------------------------------------------------------------
@@ -684,6 +688,146 @@ def post_telegram(text):
     return r.json()
 
 
+
+# ---------------------------------------------------------------------------
+# Newsletter draft generator + email sender
+# ---------------------------------------------------------------------------
+NEWSLETTER_SYSTEM = (
+    "You are a sharp AI news editor writing a daily briefing for startup founders and builders. "
+    "Tone: casual, direct, confident — like a smart friend who reads everything so you don't have to. "
+    "Never use corporate language, never say 'it remains to be seen', never be vague. "
+    "Be specific: names, numbers, concrete implications. "
+    "The reader is a founder drinking coffee — you have 3 minutes of their attention."
+)
+
+NEWSLETTER_TEMPLATE = """Write today's AI Brief newsletter using the stories below.
+
+Date: {date}
+Day tagline: A witty/ironic one-liner in parentheses that captures the mood of today's AI news. Max 12 words.
+
+FORMAT — follow this exactly, plain text, no markdown symbols:
+
+AI Brief — {date}
+(your witty tagline here)
+
+THE BIG ONE
+
+[Title of the most important story]
+
+[Paragraph 1 — 2-3 sentences: what happened, the concrete facts]
+
+[Paragraph 2 — 2-3 sentences: why it matters, what changes]
+
+[Paragraph 3 — 1-2 sentences: what this means for founders/builders specifically]
+
+-> {url_1}
+
+---
+
+QUICK HITS
+
+[Title of story 2 in bold-style caps] — [1 tight sentence of context]. -> {url_2}
+
+[Title of story 3] — [1 tight sentence of context]. -> {url_3}
+
+[Title of story 4] — [1 tight sentence of context]. -> {url_4}
+
+[Title of story 5] — [1 tight sentence of context]. -> {url_5}
+
+---
+
+ONE TOOL
+
+[Pick the most builder-relevant story or tool from today. Name it + 1 sentence of what it does + why try it.] -> [url]
+
+---
+
+AI Brief is a daily digest for founders and builders. Forward to someone who needs to know.
+
+---
+
+TODAY'S STORIES:
+{stories}
+"""
+
+
+def generate_newsletter_draft(items):
+    """Generate newsletter draft from top items using GPT."""
+    if not OPENAI_API_KEY or not items:
+        return None
+
+    date_str = datetime.now().strftime("%A, %B %d, %Y")
+
+    # Build stories block
+    stories = []
+    for i, it in enumerate(items, 1):
+        title = it.get("title", "")
+        what  = it.get("what_happened", "")
+        why   = it.get("why_important", "")
+        watch = it.get("watch", "")
+        link  = it.get("link", "")
+        stories.append(
+            f"Story {i}: {title}\n"
+            f"What happened: {what}\n"
+            f"Why it matters: {why}\n"
+            f"Watch: {watch}\n"
+            f"URL: {link}"
+        )
+
+    # Get URLs for template placeholders
+    urls = [it.get("link", "") for it in items]
+    while len(urls) < 5:
+        urls.append("")
+
+    prompt = NEWSLETTER_TEMPLATE.format(
+        date=date_str,
+        url_1=urls[0], url_2=urls[1], url_3=urls[2],
+        url_4=urls[3], url_5=urls[4],
+        stories="\n\n".join(stories),
+    )
+
+    try:
+        resp = get_client().chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": NEWSLETTER_SYSTEM},
+                {"role": "user",   "content": prompt},
+            ],
+            max_tokens=1200,
+            temperature=0.5,
+        )
+        draft = resp.choices[0].message.content.strip()
+        print(f"[DRAFT] Newsletter draft generated ({len(draft)} chars)")
+        return draft
+    except Exception as exc:
+        print(f"[DRAFT] GPT error: {exc}")
+        return None
+
+
+def send_email(subject, body, to=AUTHOR_EMAIL):
+    """Send plain text email via Gmail SMTP."""
+    import smtplib
+    from email.mime.text import MIMEText
+
+    if not SMTP_EMAIL or not SMTP_PASSWORD:
+        print("[EMAIL] Missing MAIL_EMAIL or MAIL_APP_PASSWORD — skipping email.")
+        return False
+
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = subject
+    msg["From"]    = SMTP_EMAIL
+    msg["To"]      = to
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(SMTP_EMAIL, SMTP_PASSWORD)
+            server.sendmail(SMTP_EMAIL, [to], msg.as_string())
+        print(f"[EMAIL] Sent to {to} OK")
+        return True
+    except Exception as exc:
+        print(f"[EMAIL] Failed: {exc}")
+        return False
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -743,6 +887,15 @@ def main():
     except Exception as exc:
         print(f"[POST] failed: {exc}")
         traceback.print_exc()
+
+    # Generate newsletter draft and send to author
+    draft = generate_newsletter_draft(top5)
+    if draft:
+        date_str = datetime.now().strftime("%b %d, %Y")
+        send_email(
+            subject=f"[AI Brief] Draft — {date_str}",
+            body=draft,
+        )
 
     elapsed = (datetime.now() - t0).seconds
     print(f"[END] concluido em {elapsed}s")
