@@ -715,9 +715,9 @@ def format_message(top_items, want_more):
 
     for i, e in enumerate(top_items, start=1):
         safe_title = _md_safe(e.get("title", ""))
-        body += f"{i}. *{safe_title}*"
+        body += f"{i}. {safe_title}"
         if e.get("source"):
-            body += f" _({e['source']})_"
+            body += f" ({e['source']})"
         body += "\n"
         body += f"   \U0001f4cc {_trunc(e.get('what_happened'), 300)}\n"
         body += f"   \U0001f4a1 {_trunc(e.get('why_important'), 280)}\n"
@@ -750,12 +750,13 @@ def format_message(top_items, want_more):
 
 
 def post_telegram(text):
+    # Strip any remaining Markdown symbols to avoid 400 Bad Request
+    clean = text.replace("*", "").replace("_", " ").replace("`", "").replace("[", "").replace("]", "")
     r = requests.post(
         f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
         json={
             "chat_id": TELEGRAM_CHAT_ID,
-            "text": text,
-            "parse_mode": "Markdown",
+            "text": clean,
             "disable_web_page_preview": True,
         },
         timeout=20,
