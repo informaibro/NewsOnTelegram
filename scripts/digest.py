@@ -583,86 +583,6 @@ def summarize_item(item):
 
 
 
-# ---------------------------------------------------------------------------
-# LatAm angle — runs once on the top 5 after sorting
-# One GPT call for all stories, returns angle only when genuinely relevant
-# ---------------------------------------------------------------------------
-LATAM_SYSTEM = (
-    "You are an AI editor who adds LatAm/Brazil context to global AI news for a founder audience. "
-    "Your job is to identify which stories have a specific, concrete angle for Brazil or Latin America "
-    "and write ONE tight sentence for each. "
-    "Be specific: mention Brazilian companies, regulations, market dynamics, or direct implications. "
-    "If a story has no meaningful LatAm angle, output SKIP for that story. "
-    "Do not force an angle where none exists."
-)
-
-LATAM_USER_TEMPLATE = """Below are today top AI news stories. For each, write ONE sentence with a specific Brazil/LatAm angle, or SKIP if there is no meaningful local angle.
-
-Output format — exactly {n} lines, one per story, numbered:
-1: <sentence or SKIP>
-2: <sentence or SKIP>
-
-Stories:
-{stories}
-"""
-
-
-def add_latam_angle(items):
-    """Add Brazil/LatAm context line to each item. One GPT call for all."""
-    if not OPENAI_API_KEY or not items:
-        return [{**it, "latam_angle": None} for it in items]
-
-    story_lines = []
-    for i, it in enumerate(items):
-        story_lines.append(
-            f"{i+1}. {it.get('title', '')} - {it.get('what_happened', '')[:150]}"
-        )
-    stories_text = "\n".join(story_lines)
-
-    prompt = (
-        f"Below are today's top {len(items)} AI news stories. "
-        "For each, write ONE sentence with a specific Brazil/LatAm angle. "
-        "If no meaningful local angle exists, write SKIP. Do not force it.\n\n"
-        "Rules: be specific (mention companies, regulations, market). No generic sentences.\n"
-        f"Output exactly {len(items)} numbered lines: '1: sentence or SKIP'\n\n"
-        f"Stories:\n{stories_text}"
-    )
-
-    try:
-        resp = get_client().chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {"role": "system", "content": (
-                    "You are an AI editor specializing in Brazil and Latin America tech context. "
-                    "You add sharp, specific LatAm angles to global AI news. Never generic. "
-                    "Output only the numbered lines, nothing else."
-                )},
-                {"role": "user", "content": prompt},
-            ],
-            max_tokens=300,
-            temperature=0.3,
-        )
-        raw = resp.choices[0].message.content.strip()
-        angles = {}
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            m = re.match(r"^(\d+)[:.\)]\s*(.+)$", line)
-            if m:
-                idx  = int(m.group(1)) - 1
-                text = m.group(2).strip()
-                if text.upper() != "SKIP" and len(text) > 10:
-                    angles[idx] = text
-
-        print(f"[LATAM] {len(angles)}/{len(items)} stories got LatAm angle")
-        return [{**it, "latam_angle": angles.get(i)} for i, it in enumerate(items)]
-
-    except Exception as exc:
-        print(f"[LATAM] error: {exc}")
-        return [{**it, "latam_angle": None} for it in items]
-
-
 MAX_ITEMS_PER_SOURCE = 5  # cap per feed to avoid one source dominating
 
 def enrich_all(items):
@@ -725,8 +645,6 @@ def format_message(top_items, want_more):
         body += f"   \U0001f4cc {_trunc(e.get('what_happened'), 300)}\n"
         body += f"   \U0001f4a1 {_trunc(e.get('why_important'), 280)}\n"
         body += f"   \U0001f440 {_trunc(e.get('watch'), 280)}\n"
-        if e.get("latam_angle"):
-            body += f"   \U0001f1e7\U0001f1f7 {_trunc(e['latam_angle'], 260)}\n"
         if e.get("link"):
             body += f"   \U0001f517 {e['link']}\n"
         body += "\n"
@@ -809,8 +727,6 @@ def main():
     top5      = enriched_sorted[:5]
     want_more = enriched_sorted[5:13]
 
-    # Add LatAm angle to top5 (one GPT call for all 5)
-    top5 = add_latam_angle(top5)
 
     if not top5:
         print("[WARN] No AI items — skipping Telegram.")
