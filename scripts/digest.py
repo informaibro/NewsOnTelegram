@@ -44,27 +44,27 @@ RSS_FEEDS = [
     # News outlets — breaking news and product launches
     "https://venturebeat.com/category/ai/feed/",
     "https://techcrunch.com/tag/artificial-intelligence/feed/",
-    "https://www.theverge.com/ai/rss/index.xml",
+    "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
     "https://feeds.arstechnica.com/arstechnica/index",
     "https://www.wired.com/feed/tag/ai/latest/rss",
-    "https://www.reuters.com/technology/feed/",
+    "https://feeds.reuters.com/reuters/technologyNews",
     # Official labs with working RSS
     "https://openai.com/news/rss.xml",
-    "https://deepmind.google/blog/rss/",
+    "https://deepmind.google/blog/rss.xml",
     "https://blog.google/technology/ai/rss/",
     # huggingface.co removed — 765 items, 0 summaries, no date filter
     # High-signal aggregators
     "https://simonwillison.net/atom/everything/",
     "https://news.ycombinator.com/rss",
-    "https://www.reddit.com/r/MachineLearning/.rss",
+    "https://www.reddit.com/r/MachineLearning/top/.rss?t=day",
     "https://www.404media.co/rss",
     # Hardware & infra
     "https://feeds.feedburner.com/nvidiablog",
-    "https://blogs.microsoft.com/ai/feed/",
+    "https://blogs.microsoft.com/ai/feed",
     # Business & research
-    "https://news.crunchbase.com/feed/",
-    "https://read.deeplearning.ai/the-batch/rss/",
-    "https://a16z.com/feed/",
+    "https://news.crunchbase.com/feed",
+    "https://www.deeplearning.ai/the-batch/rss/",
+    "https://a16z.com/ai/feed/",
 ]
 
 # Labs with no RSS — scraped directly from their news pages
