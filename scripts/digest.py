@@ -47,7 +47,7 @@ RSS_FEEDS = [
     "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
     "https://feeds.arstechnica.com/arstechnica/index",
     "https://www.wired.com/feed/tag/ai/latest/rss",
-    "https://feeds.reuters.com/reuters/technologyNews",
+    "https://apnews.com/rss/technology",
     # Official labs with working RSS
     "https://openai.com/news/rss.xml",
     "https://deepmind.google/blog/rss.xml",
@@ -56,15 +56,15 @@ RSS_FEEDS = [
     # High-signal aggregators
     "https://simonwillison.net/atom/everything/",
     "https://news.ycombinator.com/rss",
-    "https://www.reddit.com/r/MachineLearning/top/.rss?t=day",
+    "https://www.reddit.com/r/MachineLearning/top/.rss?t=week&limit=10",
     "https://www.404media.co/rss",
     # Hardware & infra
     "https://feeds.feedburner.com/nvidiablog",
-    "https://blogs.microsoft.com/ai/feed",
+    "https://blogs.microsoft.com/ai/search/feed/rss2/",
     # Business & research
-    "https://news.crunchbase.com/feed",
-    "https://www.deeplearning.ai/the-batch/rss/",
-    "https://a16z.com/ai/feed/",
+    "https://semafor.com/feed",
+    "https://www.deeplearning.ai/the-batch/feed/",
+    # a16z sem RSS funcional — ver SCRAPE_SOURCES
 ]
 
 # Labs with no RSS — scraped directly from their news pages
@@ -98,6 +98,12 @@ SCRAPE_SOURCES = [
         "url": "https://blog.perplexity.ai",
         "item_selector": "a[href*='/blog/']",
         "base_url": "https://blog.perplexity.ai",
+    },
+    {
+        "name": "a16z",
+        "url": "https://a16z.com/ai/",
+        "item_selector": "a[href*='/20']",
+        "base_url": "https://a16z.com",
     },
 ]
 
@@ -715,10 +721,7 @@ def format_message(top_items, want_more):
 
     for i, e in enumerate(top_items, start=1):
         safe_title = _md_safe(e.get("title", ""))
-        body += f"{i}. {safe_title}"
-        if e.get("source"):
-            body += f" ({e['source']})"
-        body += "\n"
+        body += f"{i}. {safe_title}\n"
         body += f"   \U0001f4cc {_trunc(e.get('what_happened'), 300)}\n"
         body += f"   \U0001f4a1 {_trunc(e.get('why_important'), 280)}\n"
         body += f"   \U0001f440 {_trunc(e.get('watch'), 280)}\n"
@@ -737,8 +740,6 @@ def format_message(top_items, want_more):
         lines = []
         for w in want_more:
             line = f"\u2022 {w.get('title') or 'More'}"
-            if w.get("source"):
-                line += f" _({w['source']})_"
             if w.get("link"):
                 line += f"\n  {w['link']}"
             lines.append(line)
