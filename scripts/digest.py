@@ -12,7 +12,7 @@ import os
 import re
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from difflib import SequenceMatcher
 
 import feedparser
@@ -52,7 +52,7 @@ RSS_FEEDS = [
     "https://openai.com/news/rss.xml",
     "https://deepmind.google/blog/rss/",
     "https://blog.google/technology/ai/rss/",
-    "https://huggingface.co/blog/feed.xml",
+    # huggingface.co removed — 765 items, 0 summaries, no date filter
     # High-signal aggregators
     "https://simonwillison.net/atom/everything/",
     "https://news.ycombinator.com/rss",
@@ -438,6 +438,27 @@ def is_same_story(title_a, title_b):
 
 
 def dedupe_by_similarity(items):
+    # Pass 0 — drop items older than 7 days (prevents stale RSS history)
+    now = datetime.now(timezone.utc)
+    fresh = []
+    stale_count = 0
+    for it in items:
+        pub = it.get("published")
+        if pub is not None:
+            # Normalize to UTC-aware
+            if pub.tzinfo is None:
+                pub = pub.replace(tzinfo=timezone.utc)
+            age_days = (now - pub).days
+            if age_days > 7:
+                stale_count += 1
+                continue
+            # Store normalized date back
+            it = {**it, "published": pub}
+        fresh.append(it)
+    if stale_count:
+        print(f"[DATE] dropped {stale_count} stale items (>{7} days old)")
+    items = fresh
+
     # Pass 1 — exact URL
     seen_urls   = set()
     url_deduped = []
@@ -636,7 +657,7 @@ def add_latam_angle(items):
         return [{**it, "latam_angle": None} for it in items]
 
 
-MAX_ITEMS_PER_SOURCE = 3  # cap per feed to avoid one source dominating
+MAX_ITEMS_PER_SOURCE = 5  # cap per feed to avoid one source dominating
 
 def enrich_all(items):
     ai_items = [
@@ -686,8 +707,15 @@ def format_message(top_items, want_more):
     date_str = datetime.now().astimezone().strftime("%Y-%m-%d")
     body = ""
 
+    def _md_safe(text):
+        """Strip chars that break Telegram Markdown v1 inside bold titles."""
+        if not text:
+            return ""
+        return text.replace("*", "").replace("`", "").replace("_", " ")
+
     for i, e in enumerate(top_items, start=1):
-        body += f"{i}. *{e['title']}*"
+        safe_title = _md_safe(e.get("title", ""))
+        body += f"{i}. *{safe_title}*"
         if e.get("source"):
             body += f" _({e['source']})_"
         body += "\n"
@@ -762,9 +790,17 @@ def main():
 
     enriched = enrich_all(deduped)
 
+    # Normalize all published dates to UTC-aware before sorting
+    def _to_utc(pub):
+        if pub is None:
+            return datetime.now(timezone.utc) - timedelta(days=1)
+        if pub.tzinfo is None:
+            return pub.replace(tzinfo=timezone.utc)
+        return pub
+
     enriched_sorted = sorted(
         enriched,
-        key=lambda x: x.get("published") or datetime.now(timezone.utc),
+        key=lambda x: _to_utc(x.get("published")),
         reverse=True,
     )
 
